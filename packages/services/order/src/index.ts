@@ -1,5 +1,4 @@
 // Order Service — purchase flow and payment orchestration
-export * from './repositories/base.repository';
 export * from './repositories/order.repository';
 export * from './utils/reference-number';
 export * from './services/order.service';

@@ -1,36 +1,31 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
-import * as kms from 'aws-cdk-lib/aws-kms';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
+import { EnvironmentConfig } from '../config';
 
 export interface DatabaseStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
+  config: EnvironmentConfig;
 }
 
 export class DatabaseStack extends cdk.Stack {
-  public readonly rdsInstances: Record<string, rds.DatabaseInstance>;
+  public readonly auroraClusters: Record<string, rds.DatabaseCluster>;
   public readonly dynamoTables: Record<string, dynamodb.Table>;
   public readonly rdsSecurityGroup: ec2.ISecurityGroup;
 
+  private readonly config: EnvironmentConfig;
+
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
+    this.config = props.config;
 
     const { vpc } = props;
 
-    // ─── KMS Key for RDS encryption at rest ────────────────────────────
-    const rdsEncryptionKey = new kms.Key(this, 'RdsEncryptionKey', {
-      alias: 'experience-gift/rds',
-      description: 'KMS key for RDS encryption at rest',
-      enableKeyRotation: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
-
-    // ─── RDS Security Group ────────────────────────────────────────────
     this.rdsSecurityGroup = new ec2.SecurityGroup(this, 'RdsSecurityGroup', {
       vpc,
-      description: 'Security group for RDS PostgreSQL instances',
+      description: 'Security group for Aurora Serverless v2 clusters',
       allowAllOutbound: false,
     });
 
@@ -40,52 +35,53 @@ export class DatabaseStack extends cdk.Stack {
       'Allow PostgreSQL access from within VPC',
     );
 
-    // ─── RDS PostgreSQL Instances ──────────────────────────────────────
-    this.rdsInstances = {};
-    const rdsServices = ['order', 'gift-card', 'booking', 'partner', 'payment'];
+    // --- Aurora Serverless v2 Clusters ---
+    this.auroraClusters = {};
+    const dbServices = ['order', 'gift-card', 'booking', 'partner', 'payment'];
 
-    for (const service of rdsServices) {
+    for (const service of dbServices) {
       const dbName = service.replace(/-/g, '_');
-      this.rdsInstances[service] = new rds.DatabaseInstance(this, `Rds-${service}`, {
-        engine: rds.DatabaseInstanceEngine.postgres({
-          version: rds.PostgresEngineVersion.VER_16_3,
+
+      const cluster = new rds.DatabaseCluster(this, `Aurora-${service}`, {
+        engine: rds.DatabaseClusterEngine.auroraPostgres({
+          version: rds.AuroraPostgresEngineVersion.VER_16_4,
         }),
-        instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+        serverlessV2MinCapacity: this.config.auroraMinAcu,
+        serverlessV2MaxCapacity: this.config.auroraMaxAcu,
+        writer: rds.ClusterInstance.serverlessV2(`writer-${service}`, {
+          publiclyAccessible: false,
+        }),
+        ...(this.config.auroraMultiAz
+          ? {
+              readers: [
+                rds.ClusterInstance.serverlessV2(`reader-${service}`, {
+                  publiclyAccessible: false,
+                  scaleWithWriter: true,
+                }),
+              ],
+            }
+          : {}),
         vpc,
         vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
         securityGroups: [this.rdsSecurityGroup as ec2.SecurityGroup],
-        databaseName: `egp_${dbName}`,
+        defaultDatabaseName: `egp_${dbName}`,
         credentials: rds.Credentials.fromGeneratedSecret('egp_admin', {
-          secretName: `experience-gift/rds-${service}-credentials`,
+          secretName: `experience-gift/aurora-${service}-credentials-${this.config.envName}`,
         }),
-        multiAz: true,
         storageEncrypted: true,
-        storageEncryptionKey: rdsEncryptionKey,
-        allocatedStorage: 20,
-        maxAllocatedStorage: 100,
-        backupRetention: cdk.Duration.days(7),
-        deletionProtection: true,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        monitoringInterval: cdk.Duration.seconds(60),
-        enablePerformanceInsights: true,
-        parameterGroup: new rds.ParameterGroup(this, `PgParams-${service}`, {
-          engine: rds.DatabaseInstanceEngine.postgres({
-            version: rds.PostgresEngineVersion.VER_16_3,
-          }),
-          parameters: {
-            'log_statement': 'all',
-            'log_min_duration_statement': '1000',
-          },
-        }),
+        backup: { retention: cdk.Duration.days(this.config.auroraBackupRetentionDays) },
+        deletionProtection: this.config.auroraDeletionProtection,
+        removalPolicy: this.config.removalPolicy,
       });
+
+      this.auroraClusters[service] = cluster;
     }
 
-    // ─── DynamoDB Tables ───────────────────────────────────────────────
+    // --- DynamoDB Tables ---
     this.dynamoTables = {};
 
-    // ── Catalog: experiences ───────────────────────────────────────────
     this.dynamoTables['catalog-experiences'] = this.createTable('CatalogExperiences', {
-      tableName: 'experience-gift-catalog-experiences',
+      tableName: `experience-gift-catalog-experiences-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       gsis: [
         { indexName: 'partnerId-createdAt-index', pk: 'partnerId', sk: 'createdAt' },
@@ -94,81 +90,61 @@ export class DatabaseStack extends cdk.Stack {
       ],
     });
 
-    // ── Catalog: occasions ─────────────────────────────────────────────
     this.dynamoTables['catalog-occasions'] = this.createTable('CatalogOccasions', {
-      tableName: 'experience-gift-catalog-occasions',
+      tableName: `experience-gift-catalog-occasions-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Catalog: occasion_experience_mappings ──────────────────────────
     this.dynamoTables['catalog-occasion-mappings'] = this.createTable('CatalogOccasionMappings', {
-      tableName: 'experience-gift-catalog-occasion-mappings',
+      tableName: `experience-gift-catalog-occasion-mappings-${this.config.envName}`,
       partitionKey: { name: 'occasionId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'experienceId', type: dynamodb.AttributeType.STRING },
-      gsis: [
-        { indexName: 'experienceId-occasionId-index', pk: 'experienceId', sk: 'occasionId' },
-      ],
+      gsis: [{ indexName: 'experienceId-occasionId-index', pk: 'experienceId', sk: 'occasionId' }],
     });
 
-    // ── Catalog: age_group_experience_mappings ─────────────────────────
     this.dynamoTables['catalog-age-group-mappings'] = this.createTable('CatalogAgeGroupMappings', {
-      tableName: 'experience-gift-catalog-age-group-mappings',
+      tableName: `experience-gift-catalog-age-group-mappings-${this.config.envName}`,
       partitionKey: { name: 'ageGroup', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'experienceId', type: dynamodb.AttributeType.STRING },
-      gsis: [
-        { indexName: 'experienceId-ageGroup-index', pk: 'experienceId', sk: 'ageGroup' },
-      ],
+      gsis: [{ indexName: 'experienceId-ageGroup-index', pk: 'experienceId', sk: 'ageGroup' }],
     });
 
-    // ── Catalog: gift_card_templates ───────────────────────────────────
     this.dynamoTables['catalog-templates'] = this.createTable('CatalogTemplates', {
-      tableName: 'experience-gift-catalog-templates',
+      tableName: `experience-gift-catalog-templates-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      gsis: [
-        { indexName: 'occasionId-createdAt-index', pk: 'occasionId', sk: 'createdAt' },
-      ],
+      gsis: [{ indexName: 'occasionId-createdAt-index', pk: 'occasionId', sk: 'createdAt' }],
     });
 
-    // ── Catalog: curated_collections ───────────────────────────────────
     this.dynamoTables['catalog-collections'] = this.createTable('CatalogCollections', {
-      tableName: 'experience-gift-catalog-collections',
+      tableName: `experience-gift-catalog-collections-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      gsis: [
-        { indexName: 'occasionId-createdAt-index', pk: 'occasionId', sk: 'createdAt' },
-      ],
+      gsis: [{ indexName: 'occasionId-createdAt-index', pk: 'occasionId', sk: 'createdAt' }],
     });
 
-    // ── Catalog: categories ────────────────────────────────────────────
     this.dynamoTables['catalog-categories'] = this.createTable('CatalogCategories', {
-      tableName: 'experience-gift-catalog-categories',
+      tableName: `experience-gift-catalog-categories-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Catalog: time_slots ────────────────────────────────────────────
     this.dynamoTables['catalog-time-slots'] = this.createTable('CatalogTimeSlots', {
-      tableName: 'experience-gift-catalog-time-slots',
+      tableName: `experience-gift-catalog-time-slots-${this.config.envName}`,
       partitionKey: { name: 'experienceId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'slotId', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Admin: action_log ──────────────────────────────────────────────
     this.dynamoTables['admin-action-log'] = this.createTable('AdminActionLog', {
-      tableName: 'experience-gift-admin-action-log',
+      tableName: `experience-gift-admin-action-log-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      gsis: [
-        { indexName: 'adminId-createdAt-index', pk: 'adminId', sk: 'createdAt' },
-      ],
+      gsis: [{ indexName: 'adminId-createdAt-index', pk: 'adminId', sk: 'createdAt' }],
     });
 
-    // ── Admin: platform_settings ───────────────────────────────────────
     this.dynamoTables['admin-platform-settings'] = this.createTable('AdminPlatformSettings', {
-      tableName: 'experience-gift-admin-platform-settings',
+      tableName: `experience-gift-admin-platform-settings-${this.config.envName}`,
       partitionKey: { name: 'key', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Wishlist: wishlists ────────────────────────────────────────────
     this.dynamoTables['wishlists'] = this.createTable('Wishlists', {
-      tableName: 'experience-gift-wishlists',
+      tableName: `experience-gift-wishlists-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       gsis: [
         { indexName: 'userId-createdAt-index', pk: 'userId', sk: 'createdAt' },
@@ -176,16 +152,14 @@ export class DatabaseStack extends cdk.Stack {
       ],
     });
 
-    // ── Wishlist: wishlist_items ────────────────────────────────────────
     this.dynamoTables['wishlist-items'] = this.createTable('WishlistItems', {
-      tableName: 'experience-gift-wishlist-items',
+      tableName: `experience-gift-wishlist-items-${this.config.envName}`,
       partitionKey: { name: 'wishlistId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'itemId', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Community: shared_moments ──────────────────────────────────────
     this.dynamoTables['community-shared-moments'] = this.createTable('CommunitySharedMoments', {
-      tableName: 'experience-gift-community-shared-moments',
+      tableName: `experience-gift-community-shared-moments-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       gsis: [
         { indexName: 'bookingId-index', pk: 'bookingId' },
@@ -194,31 +168,45 @@ export class DatabaseStack extends cdk.Stack {
       ],
     });
 
-    // ── Community: community_impact_metrics ─────────────────────────────
     this.dynamoTables['community-impact-metrics'] = this.createTable('CommunityImpactMetrics', {
-      tableName: 'experience-gift-community-impact-metrics',
+      tableName: `experience-gift-community-impact-metrics-${this.config.envName}`,
       partitionKey: { name: 'metricKey', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'metricPeriod', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Community: impact_badges ────────────────────────────────────────
     this.dynamoTables['community-impact-badges'] = this.createTable('CommunityImpactBadges', {
-      tableName: 'experience-gift-community-impact-badges',
+      tableName: `experience-gift-community-impact-badges-${this.config.envName}`,
       partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'badgeType', type: dynamodb.AttributeType.STRING },
     });
 
-    // ── Notification: notification_log ──────────────────────────────────
-    this.dynamoTables['notification-log'] = this.createTable('NotificationLog', {
-      tableName: 'experience-gift-notification-log',
+    this.dynamoTables['gift-cards'] = this.createTable('GiftCards', {
+      tableName: `experience-gift-gift-cards-${this.config.envName}`,
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       gsis: [
-        { indexName: 'giftCardId-lastAttemptAt-index', pk: 'giftCardId', sk: 'lastAttemptAt' },
+        { indexName: 'redemptionCode-index', pk: 'redemptionCode' },
+        { indexName: 'orderId-index', pk: 'orderId' },
+        { indexName: 'recipientEmail-createdAt-index', pk: 'recipientEmail', sk: 'createdAt' },
       ],
+    });
+
+    this.dynamoTables['orders'] = this.createTable('Orders', {
+      tableName: `experience-gift-orders-${this.config.envName}`,
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      gsis: [
+        { indexName: 'reference_number-index', pk: 'reference_number' },
+        { indexName: 'purchaser_email-created_at-index', pk: 'purchaser_email', sk: 'created_at' },
+        { indexName: 'recipient_email-created_at-index', pk: 'recipient_email', sk: 'created_at' },
+      ],
+    });
+
+    this.dynamoTables['notification-log'] = this.createTable('NotificationLog', {
+      tableName: `experience-gift-notification-log-${this.config.envName}`,
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      gsis: [{ indexName: 'giftCardId-lastAttemptAt-index', pk: 'giftCardId', sk: 'lastAttemptAt' }],
     });
   }
 
-  // ─── Helper: create DynamoDB table with optional GSIs ────────────────
   private createTable(
     id: string,
     config: {
@@ -234,8 +222,8 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: config.sortKey,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
-      pointInTimeRecovery: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      pointInTimeRecovery: this.config.envName === 'prod',
+      removalPolicy: this.config.removalPolicy,
     });
 
     for (const gsi of config.gsis ?? []) {

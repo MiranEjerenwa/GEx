@@ -1,4 +1,4 @@
-export { BaseRepository, QueryOptions, QueryResult } from './base.repository';
+export { BaseRepository, QueryOptions, QueryResult, resolveTableName } from './base.repository';
 export { ExperienceRepository, Experience } from './experience.repository';
 export { CategoryRepository, Category } from './category.repository';
 export { OccasionRepository, Occasion, OccasionExperienceMapping } from './occasion.repository';

@@ -1,6 +1,6 @@
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@experience-gift/shared-types';
-import { BaseRepository, QueryOptions, QueryResult } from './base.repository';
+import { BaseRepository, QueryOptions, QueryResult, resolveTableName } from './base.repository';
 
 export interface Occasion {
   id: string;
@@ -23,7 +23,7 @@ export class OccasionRepository extends BaseRepository<Occasion> {
 
   constructor(docClient: DynamoDBDocumentClient, logger: Logger) {
     super(docClient, OCCASIONS_TABLE, logger);
-    this.mappingsTableName = MAPPINGS_TABLE;
+    this.mappingsTableName = resolveTableName(MAPPINGS_TABLE);
   }
 
   async getById(id: string): Promise<Occasion | null> {

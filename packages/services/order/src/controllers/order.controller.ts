@@ -84,6 +84,24 @@ export class OrderController {
     }
   };
 
+  listByPurchaser = async (req: Request, res: Response): Promise<void> => {
+    const requestId = uuidv4();
+    try {
+      const email = req.query.email as string;
+      if (!email) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'email query parameter is required', requestId, traceId: requestId } });
+        return;
+      }
+      const role = req.query.role as string;
+      const orders = role === 'recipient'
+        ? await this.orderService.listByRecipientEmail(email)
+        : await this.orderService.listByPurchaserEmail(email);
+      res.status(200).json({ orders });
+    } catch (error) {
+      this.handleError(res, error, requestId);
+    }
+  };
+
   resendDeliveryEmail = async (req: Request, res: Response): Promise<void> => {
     const requestId = uuidv4();
     try {

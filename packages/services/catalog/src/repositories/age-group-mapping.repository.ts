@@ -1,5 +1,6 @@
 import { DynamoDBDocumentClient, QueryCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@experience-gift/shared-types';
+import { resolveTableName } from './base.repository';
 
 export interface AgeGroupExperienceMapping {
   ageGroup: string;
@@ -16,7 +17,7 @@ export class AgeGroupMappingRepository {
 
   constructor(docClient: DynamoDBDocumentClient, logger: Logger) {
     this.docClient = docClient;
-    this.tableName = TABLE_NAME;
+    this.tableName = resolveTableName(TABLE_NAME);
     this.logger = logger;
   }
 

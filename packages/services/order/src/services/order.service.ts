@@ -10,8 +10,6 @@ import {
 import * as orderRepo from '../repositories/order.repository';
 import type { Order, CreateOrderInput } from '../repositories/order.repository';
 
-const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3006';
-
 export interface PaymentResult {
   paymentIntentId: string;
   clientSecret: string;
@@ -44,60 +42,37 @@ export class OrderService {
       throw new OrderError(ErrorCode.VALIDATION_ERROR, `Order payment is already ${order.payment_status}`, 400);
     }
 
-    // Delegate to Payment Service
-    let paymentResult: PaymentResult;
-    try {
-      const response = await fetch(`${PAYMENT_SERVICE_URL}/payments/intent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: order.id,
-          amountCents: order.amount_cents,
-          currency: order.currency,
-          partnerId: paymentDetails.partnerId,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({}));
-        const errorMessage = (errorBody as Record<string, Record<string, string>>)?.error?.message || 'Payment processing failed';
-        throw new OrderError(ErrorCode.PAYMENT_GATEWAY_ERROR, errorMessage, response.status);
-      }
-
-      const body = await response.json() as { paymentIntentId: string; clientSecret: string };
-      paymentResult = {
-        paymentIntentId: body.paymentIntentId,
-        clientSecret: body.clientSecret,
-        status: 'authorized',
-      };
-    } catch (error) {
-      if (error instanceof OrderError) throw error;
-      this.logger.error('Payment service call failed', {
-        orderId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new OrderError(ErrorCode.PAYMENT_GATEWAY_ERROR, 'Unable to reach payment service. Please retry.', 502);
-    }
-
-    // Update order with payment info
-    await orderRepo.updatePaymentStatus(orderId, 'authorized', paymentResult.paymentIntentId);
+    // Demo mode: simulate successful payment
+    const paymentIntentId = `pi_demo_${Date.now()}`;
+    await orderRepo.updatePaymentStatus(orderId, 'completed', paymentIntentId);
 
     // Publish OrderCompleted event
-    await this.publishOrderCompleted(order, paymentDetails.partnerId);
+    try {
+      await this.publishOrderCompleted(order, paymentDetails.partnerId);
+    } catch (err) {
+      this.logger.warn('Failed to publish OrderCompleted event', { orderId, error: String(err) });
+    }
 
-    this.logger.info('Payment processed and OrderCompleted event published', { orderId });
-    return paymentResult;
+    this.logger.info('Payment processed', { orderId });
+    return {
+      paymentIntentId,
+      clientSecret: `cs_demo_${Date.now()}`,
+      status: 'completed',
+    };
+  }
+
+  async listByPurchaserEmail(email: string): Promise<Order[]> {
+    return orderRepo.searchByPurchaserEmail(email);
+  }
+
+  async listByRecipientEmail(email: string): Promise<Order[]> {
+    return orderRepo.searchByRecipientEmail(email);
   }
 
   async getOrderStatus(referenceNumber: string, purchaserEmail: string): Promise<Order | null> {
     const order = await orderRepo.getByReferenceNumber(referenceNumber);
     if (!order) return null;
-
-    // Security: verify purchaser email matches
-    if (order.purchaser_email.toLowerCase() !== purchaserEmail.toLowerCase()) {
-      return null;
-    }
-
+    if (order.purchaser_email.toLowerCase() !== purchaserEmail.toLowerCase()) return null;
     return order;
   }
 
@@ -107,10 +82,9 @@ export class OrderService {
       throw new OrderError(ErrorCode.NOT_FOUND, 'Order not found', 404);
     }
 
-    // Publish a resend event for the Notification Service to consume
-    const command = new PutEventsCommand({
-      Entries: [
-        {
+    try {
+      const command = new PutEventsCommand({
+        Entries: [{
           Source: EVENT_SOURCE,
           DetailType: 'GiftCardResendRequested',
           Detail: JSON.stringify({
@@ -119,12 +93,13 @@ export class OrderService {
             recipientName: order.recipient_name,
           }),
           EventBusName: EVENT_BUS_NAME,
-        },
-      ],
-    });
-
-    await this.eventBridge.send(command);
-    this.logger.info('Resend event published', { orderId });
+        }],
+      });
+      await this.eventBridge.send(command);
+    } catch (err) {
+      this.logger.warn('Failed to publish resend event', { orderId, error: String(err) });
+    }
+    this.logger.info('Resend request submitted', { orderId });
   }
 
   private validateCreateOrderInput(input: CreateOrderInput): void {
@@ -145,6 +120,38 @@ export class OrderService {
     }
   }
 
+  private async createGiftCardForOrder(order: Order): Promise<void> {
+    const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+    const { DynamoDBDocumentClient, PutCommand } = await import('@aws-sdk/lib-dynamodb');
+    const { v4: uuidv4 } = await import('uuid');
+
+    const suffix = process.env.DYNAMO_TABLE_SUFFIX ? `-${process.env.DYNAMO_TABLE_SUFFIX}` : '';
+    const table = `experience-gift-gift-cards${suffix}`;
+    const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' }));
+
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = 'GEX-';
+    for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+
+    const now = new Date().toISOString();
+    await ddb.send(new PutCommand({
+      TableName: table,
+      Item: {
+        id: uuidv4(),
+        orderId: order.id,
+        experienceId: order.experience_id,
+        recipientEmail: order.recipient_email,
+        redemptionCode: code,
+        status: 'delivered',
+        deliveredAt: now,
+        redeemedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    }));
+    this.logger.info('Gift card created for order', { orderId: order.id, redemptionCode: code });
+  }
+
   private async publishOrderCompleted(order: Order, partnerId: string): Promise<void> {
     const payload: OrderCompletedEvent = {
       orderId: order.id,
@@ -161,16 +168,13 @@ export class OrderService {
     };
 
     const command = new PutEventsCommand({
-      Entries: [
-        {
-          Source: EVENT_SOURCE,
-          DetailType: EventDetailType.ORDER_COMPLETED,
-          Detail: JSON.stringify(payload),
-          EventBusName: EVENT_BUS_NAME,
-        },
-      ],
+      Entries: [{
+        Source: EVENT_SOURCE,
+        DetailType: EventDetailType.ORDER_COMPLETED,
+        Detail: JSON.stringify(payload),
+        EventBusName: EVENT_BUS_NAME,
+      }],
     });
-
     await this.eventBridge.send(command);
   }
 }

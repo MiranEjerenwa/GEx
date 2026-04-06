@@ -12,7 +12,7 @@ import {
   PaginatedResult,
 } from '@experience-gift/shared-types';
 
-// ── View Models ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ View Models Ã¢â€â‚¬Ã¢â€â‚¬
 
 export interface PartnerDashboard {
   partnerId: string;
@@ -100,7 +100,7 @@ export interface PartnerLoginRequest {
   password: string;
 }
 
-// ── API Client ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ API Client Ã¢â€â‚¬Ã¢â€â‚¬
 
 export class PartnerApiClient {
   constructor(
@@ -129,7 +129,7 @@ export class PartnerApiClient {
     return response.json() as Promise<T>;
   }
 
-  // ── Auth ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Auth Ã¢â€â‚¬Ã¢â€â‚¬
 
   async login(data: PartnerLoginRequest): Promise<AuthTokens> {
     return this.request<AuthTokens>('/auth/partner/login', { method: 'POST', body: JSON.stringify(data) });
@@ -139,13 +139,13 @@ export class PartnerApiClient {
     return this.request<AuthTokens>('/auth/token/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) });
   }
 
-  // ── Dashboard ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Dashboard Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getDashboard(): Promise<PartnerDashboard> {
     return this.request<PartnerDashboard>('/partners/dashboard');
   }
 
-  // ── Experiences ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Experiences Ã¢â€â‚¬Ã¢â€â‚¬
 
   async createExperience(data: CreateExperienceRequest): Promise<PartnerExperience> {
     return this.request<PartnerExperience>('/partners/experiences', { method: 'POST', body: JSON.stringify(data) });
@@ -159,7 +159,7 @@ export class PartnerApiClient {
     return this.request<PartnerExperience>(`/partners/experiences/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
   }
 
-  // ── Bookings ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Bookings Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getBookings(page?: number, limit?: number): Promise<PaginatedResult<PartnerBooking>> {
     const params = new URLSearchParams();
@@ -169,20 +169,20 @@ export class PartnerApiClient {
     return this.request<PaginatedResult<PartnerBooking>>(`/partners/bookings${qs ? `?${qs}` : ''}`);
   }
 
-  // ── Onboarding ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Onboarding Ã¢â€â‚¬Ã¢â€â‚¬
 
   async applyOnboarding(data: ApplyOnboardingRequest): Promise<OnboardingApplication> {
     return this.request<OnboardingApplication>('/partners/onboarding/apply', { method: 'POST', body: JSON.stringify(data) });
   }
 
-  // ── Stripe Connect ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Stripe Connect Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getStripeConnectLink(partnerId: string): Promise<StripeConnectLink> {
     return this.request<StripeConnectLink>(`/partners/${partnerId}/stripe-connect/onboarding-link`);
   }
 }
 
-// ── Error Class ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ Error Class Ã¢â€â‚¬Ã¢â€â‚¬
 
 export class PartnerApiError extends Error {
   constructor(

@@ -5,6 +5,7 @@ import {
   RespondToAuthChallengeCommand,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
+  AdminConfirmSignUpCommand,
   GlobalSignOutCommand,
   AuthFlowType,
   ChallengeNameType,

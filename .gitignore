@@ -7,3 +7,17 @@ coverage/
 *.d.ts.map
 .env
 .env.local
+deploy-*.log
+*.log
+
+fix-*.py
+fix-*.sh
+
+test-*.sh
+seed-*.sh
+
+cdk.context.json
+
+dist/
+cdk.out/
+*.tsbuildinfo

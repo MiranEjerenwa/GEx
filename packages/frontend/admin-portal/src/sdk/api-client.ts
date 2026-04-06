@@ -12,7 +12,7 @@ import {
   StripeConnectStatus,
 } from '@experience-gift/shared-types';
 
-// ── View Models ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ View Models Ã¢â€â‚¬Ã¢â€â‚¬
 
 export interface AdminDashboard {
   totalOrders: number;
@@ -121,7 +121,7 @@ export interface AdminLoginRequest {
   mfaCode: string;
 }
 
-// ── API Client ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ API Client Ã¢â€â‚¬Ã¢â€â‚¬
 
 export class AdminApiClient {
   constructor(
@@ -150,7 +150,7 @@ export class AdminApiClient {
     return response.json() as Promise<T>;
   }
 
-  // ── Auth ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Auth Ã¢â€â‚¬Ã¢â€â‚¬
 
   async login(data: AdminLoginRequest): Promise<AuthTokens> {
     return this.request<AuthTokens>('/auth/admin/login', { method: 'POST', body: JSON.stringify(data) });
@@ -160,7 +160,7 @@ export class AdminApiClient {
     return this.request<AuthTokens>('/auth/token/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) });
   }
 
-  // ── Dashboard ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Dashboard Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getDashboard(periodStart?: string, periodEnd?: string): Promise<AdminDashboard> {
     const params = new URLSearchParams();
@@ -170,7 +170,7 @@ export class AdminApiClient {
     return this.request<AdminDashboard>(`/admin/dashboard${qs ? `?${qs}` : ''}`);
   }
 
-  // ── Orders ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Orders Ã¢â€â‚¬Ã¢â€â‚¬
 
   async searchOrders(query: { referenceNumber?: string; purchaserEmail?: string; recipientEmail?: string }): Promise<AdminOrder[]> {
     const params = new URLSearchParams();
@@ -180,7 +180,7 @@ export class AdminApiClient {
     return this.request<AdminOrder[]>(`/admin/orders?${params}`);
   }
 
-  // ── Gift Cards ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Gift Cards Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getGiftCardDetail(id: string): Promise<AdminGiftCardDetail> {
     return this.request<AdminGiftCardDetail>(`/admin/gift-cards/${id}`);
@@ -190,7 +190,7 @@ export class AdminApiClient {
     return this.request<{ success: boolean }>(`/admin/gift-cards/${id}/resend`, { method: 'POST' });
   }
 
-  // ── Partners ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Partners Ã¢â€â‚¬Ã¢â€â‚¬
 
   async listPartners(): Promise<AdminPartner[]> {
     return this.request<AdminPartner[]>('/admin/partners');
@@ -204,7 +204,7 @@ export class AdminApiClient {
     return this.request<{ success: boolean }>(`/admin/partners/${partnerId}/commission`, { method: 'PUT', body: JSON.stringify({ rate }) });
   }
 
-  // ── Onboarding ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Onboarding Ã¢â€â‚¬Ã¢â€â‚¬
 
   async listOnboardingApplications(): Promise<AdminOnboardingApplication[]> {
     return this.request<AdminOnboardingApplication[]>('/partners/onboarding');
@@ -218,7 +218,7 @@ export class AdminApiClient {
     return this.request<{ success: boolean }>(`/partners/onboarding/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
   }
 
-  // ── Settings ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Settings Ã¢â€â‚¬Ã¢â€â‚¬
 
   async getSettings(): Promise<PlatformSettings> {
     return this.request<PlatformSettings>('/admin/settings');
@@ -228,14 +228,14 @@ export class AdminApiClient {
     return this.request<PlatformSettings>('/admin/settings', { method: 'PUT', body: JSON.stringify(settings) });
   }
 
-  // ── Occasion Collections ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Occasion Collections Ã¢â€â‚¬Ã¢â€â‚¬
 
   async configureOccasionCollection(config: OccasionCollectionConfig): Promise<{ success: boolean }> {
     return this.request<{ success: boolean }>(`/admin/occasions/${config.occasionId}/collection`, { method: 'POST', body: JSON.stringify(config) });
   }
 }
 
-// ── Error Class ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ Error Class Ã¢â€â‚¬Ã¢â€â‚¬
 
 export class AdminApiError extends Error {
   constructor(

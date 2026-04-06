@@ -4,15 +4,8 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 
-export interface EventWiringStackProps extends cdk.StackProps {
-  eventBus: events.IEventBus;
-  dlq: sqs.IQueue;
-}
+export interface EventWiringStackProps extends cdk.StackProps {}
 
-/**
- * Event routing matrix — maps each domain event to its consumer services.
- * Each consumer gets a dedicated SQS queue with a DLQ for failed deliveries.
- */
 interface EventRoute {
   detailType: string;
   consumers: string[];
@@ -36,12 +29,28 @@ const EVENT_ROUTES: EventRoute[] = [
 const EVENT_SOURCE = 'experience-gift-platform';
 
 export class EventWiringStack extends cdk.Stack {
+  public readonly eventBus: events.EventBus;
   public readonly queues: Record<string, sqs.Queue> = {};
 
-  constructor(scope: Construct, id: string, props: EventWiringStackProps) {
+  constructor(scope: Construct, id: string, props?: EventWiringStackProps) {
     super(scope, id, props);
 
-    const { eventBus, dlq } = props;
+    // Create EventBridge bus and DLQ in this stack to avoid cross-stack cycles
+    const dlq = new sqs.Queue(this, 'EventBusDlq', {
+      queueName: 'experience-gift-eventbus-dlq',
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+    });
+
+    this.eventBus = new events.EventBus(this, 'EventBus', {
+      eventBusName: 'experience-gift-events',
+    });
+
+    this.eventBus.archive('EventArchive', {
+      archiveName: 'experience-gift-event-archive',
+      retention: cdk.Duration.days(90),
+      eventPattern: { account: [this.account] },
+    });
 
     // Collect unique consumer names
     const consumerNames = new Set<string>();
@@ -75,13 +84,13 @@ export class EventWiringStack extends cdk.Stack {
       this.queues[consumer] = queue;
     }
 
-    // Create EventBridge rules — one rule per (detailType, consumer) pair
+    // Create EventBridge rules
     for (const route of EVENT_ROUTES) {
       for (const consumer of route.consumers) {
         const ruleId = `${route.detailType}-to-${consumer}`;
 
         new events.Rule(this, ruleId, {
-          eventBus,
+          eventBus: this.eventBus,
           ruleName: `egp-${ruleId}`,
           description: `Route ${route.detailType} events to ${consumer} service`,
           eventPattern: {
@@ -98,7 +107,7 @@ export class EventWiringStack extends cdk.Stack {
       }
     }
 
-    // ─── Outputs ──────────────────────────────────────────────────────
+    // Outputs
     for (const [consumer, queue] of Object.entries(consumerQueues)) {
       new cdk.CfnOutput(this, `${consumer}-queue-url`, {
         value: queue.queueUrl,

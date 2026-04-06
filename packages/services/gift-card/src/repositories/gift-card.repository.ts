@@ -1,8 +1,15 @@
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
-import { query, withTransaction } from './base.repository';
 import { generateRedemptionCode } from '../utils/redemption-code';
 import { GiftCardStatus } from '@experience-gift/shared-types';
-import type { PoolClient } from 'pg';
+
+const SUFFIX = process.env.DYNAMO_TABLE_SUFFIX ? `-${process.env.DYNAMO_TABLE_SUFFIX}` : '';
+const TABLE = `experience-gift-gift-cards${SUFFIX}`;
+const REGION = process.env.AWS_REGION || 'us-east-1';
+
+const client = new DynamoDBClient({ region: REGION });
+const docClient = DynamoDBDocumentClient.from(client);
 
 export interface GiftCard {
   id: string;
@@ -17,34 +24,6 @@ export interface GiftCard {
   updated_at: Date;
 }
 
-type GiftCardRow = {
-  id: string;
-  order_id: string;
-  experience_id: string;
-  recipient_email: string;
-  redemption_code: string;
-  status: string;
-  delivered_at: Date | null;
-  redeemed_at: Date | null;
-  created_at: Date;
-  updated_at: Date;
-};
-
-function toGiftCard(row: GiftCardRow): GiftCard {
-  return {
-    id: row.id,
-    order_id: row.order_id,
-    experience_id: row.experience_id,
-    recipient_email: row.recipient_email,
-    redemption_code: row.redemption_code,
-    status: row.status,
-    delivered_at: row.delivered_at,
-    redeemed_at: row.redeemed_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
-}
-
 export interface CreateGiftCardInput {
   order_id: string;
   experience_id: string;
@@ -52,127 +31,111 @@ export interface CreateGiftCardInput {
 }
 
 export async function create(input: CreateGiftCardInput): Promise<GiftCard> {
-  const id = uuidv4();
-  const redemptionCode = generateRedemptionCode();
-  const now = new Date();
-
-  const result = await query<GiftCardRow>(
-    `INSERT INTO gift_cards (
-      id, order_id, experience_id, recipient_email, redemption_code,
-      status, created_at, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    RETURNING *`,
-    [id, input.order_id, input.experience_id, input.recipient_email, redemptionCode, GiftCardStatus.PURCHASED, now, now],
-  );
-
-  return toGiftCard(result.rows[0]);
+  const now = new Date().toISOString();
+  const item: Record<string, unknown> = {
+    id: uuidv4(),
+    orderId: input.order_id,
+    experienceId: input.experience_id,
+    recipientEmail: input.recipient_email,
+    redemptionCode: generateRedemptionCode(),
+    status: GiftCardStatus.DELIVERED,
+    deliveredAt: now,
+    redeemedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await docClient.send(new PutCommand({ TableName: TABLE, Item: item }));
+  return mapToGiftCard(item);
 }
 
 export async function getById(id: string): Promise<GiftCard | null> {
-  const result = await query<GiftCardRow>('SELECT * FROM gift_cards WHERE id = $1', [id]);
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
+  const result = await docClient.send(new GetCommand({ TableName: TABLE, Key: { id } }));
+  return result.Item ? mapToGiftCard(result.Item) : null;
 }
 
 export async function getByRedemptionCode(code: string): Promise<GiftCard | null> {
-  const result = await query<GiftCardRow>(
-    'SELECT * FROM gift_cards WHERE redemption_code = $1',
-    [code],
-  );
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
+  const result = await docClient.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: 'redemptionCode-index',
+    KeyConditionExpression: 'redemptionCode = :code',
+    ExpressionAttributeValues: { ':code': code },
+  }));
+  return result.Items?.[0] ? mapToGiftCard(result.Items[0]) : null;
 }
 
 export async function getByOrderId(orderId: string): Promise<GiftCard | null> {
-  const result = await query<GiftCardRow>(
-    'SELECT * FROM gift_cards WHERE order_id = $1',
-    [orderId],
-  );
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
+  const result = await docClient.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: 'orderId-index',
+    KeyConditionExpression: 'orderId = :oid',
+    ExpressionAttributeValues: { ':oid': orderId },
+  }));
+  return result.Items?.[0] ? mapToGiftCard(result.Items[0]) : null;
 }
 
-/**
- * Acquire a pessimistic lock on a gift card row using SELECT ... FOR UPDATE.
- * Must be called within a transaction (pass the PoolClient).
- */
-export async function getByRedemptionCodeForUpdate(
-  client: PoolClient,
-  code: string,
-): Promise<GiftCard | null> {
-  const result = await client.query<GiftCardRow>(
-    'SELECT * FROM gift_cards WHERE redemption_code = $1 FOR UPDATE',
-    [code],
-  );
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
-}
-
-/**
- * Transition gift card to 'delivered' status.
- * The DB trigger enforces purchased → delivered only.
- */
 export async function markAsDelivered(id: string): Promise<GiftCard | null> {
-  const now = new Date();
-  const result = await query<GiftCardRow>(
-    `UPDATE gift_cards
-     SET status = $2, delivered_at = $3, updated_at = $4
-     WHERE id = $1
-     RETURNING *`,
-    [id, GiftCardStatus.DELIVERED, now, now],
-  );
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
+  const now = new Date().toISOString();
+  const result = await docClient.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { id },
+    UpdateExpression: 'SET #s = :status, deliveredAt = :da, updatedAt = :now',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ExpressionAttributeValues: { ':status': GiftCardStatus.DELIVERED, ':da': now, ':now': now },
+    ReturnValues: 'ALL_NEW',
+  }));
+  return result.Attributes ? mapToGiftCard(result.Attributes) : null;
 }
 
-/**
- * Transition gift card to 'redeemed' status within a transaction.
- * The DB trigger enforces delivered → redeemed only.
- */
-export async function markAsRedeemed(
-  client: PoolClient,
-  id: string,
-): Promise<GiftCard | null> {
-  const now = new Date();
-  const result = await client.query<GiftCardRow>(
-    `UPDATE gift_cards
-     SET status = $2, redeemed_at = $3, updated_at = $4
-     WHERE id = $1
-     RETURNING *`,
-    [id, GiftCardStatus.REDEEMED, now, now],
-  );
-  return result.rows[0] ? toGiftCard(result.rows[0]) : null;
-}
+export async function redeemWithLock(redemptionCode: string): Promise<GiftCard> {
+  const giftCard = await getByRedemptionCode(redemptionCode);
+  if (!giftCard) {
+    throw new RedemptionError('invalid_code', 'Invalid redemption code');
+  }
+  if (giftCard.status === GiftCardStatus.REDEEMED) {
+    throw new RedemptionError('already_redeemed', 'Gift card has already been redeemed', giftCard);
+  }
+  if (giftCard.status !== GiftCardStatus.DELIVERED) {
+    throw new RedemptionError('not_delivered', 'Gift card has not been delivered yet');
+  }
 
-/**
- * Atomic redemption: lock → verify → update → return within a single transaction.
- * Returns the updated gift card or throws on invalid state.
- */
-export async function redeemWithLock(
-  redemptionCode: string,
-): Promise<GiftCard> {
-  return withTransaction(async (client) => {
-    const giftCard = await getByRedemptionCodeForUpdate(client, redemptionCode);
-    if (!giftCard) {
-      throw new RedemptionError('invalid_code', 'Invalid redemption code');
-    }
-
-    if (giftCard.status === GiftCardStatus.REDEEMED) {
-      throw new RedemptionError('already_redeemed', 'Gift card has already been redeemed', giftCard);
-    }
-
-    if (giftCard.status !== GiftCardStatus.DELIVERED) {
-      throw new RedemptionError('not_delivered', 'Gift card has not been delivered yet');
-    }
-
-    const redeemed = await markAsRedeemed(client, giftCard.id);
-    if (!redeemed) {
+  const now = new Date().toISOString();
+  try {
+    const result = await docClient.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { id: giftCard.id },
+      UpdateExpression: 'SET #s = :redeemed, redeemedAt = :now, updatedAt = :now',
+      ConditionExpression: '#s = :delivered',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':redeemed': GiftCardStatus.REDEEMED, ':delivered': GiftCardStatus.DELIVERED, ':now': now },
+      ReturnValues: 'ALL_NEW',
+    }));
+    return mapToGiftCard(result.Attributes!);
+  } catch (err: any) {
+    if (err.name === 'ConditionalCheckFailedException') {
       throw new RedemptionError('concurrent_conflict', 'Concurrent redemption conflict');
     }
+    throw err;
+  }
+}
 
-    return redeemed;
-  });
+function mapToGiftCard(item: Record<string, unknown>): GiftCard {
+  return {
+    id: item.id as string,
+    order_id: (item.orderId as string) ?? (item.order_id as string) ?? '',
+    experience_id: (item.experienceId as string) ?? (item.experience_id as string) ?? '',
+    recipient_email: (item.recipientEmail as string) ?? (item.recipient_email as string) ?? '',
+    redemption_code: (item.redemptionCode as string) ?? (item.redemption_code as string) ?? '',
+    status: (item.status as string) ?? '',
+    delivered_at: item.deliveredAt ? new Date(item.deliveredAt as string) : null,
+    redeemed_at: item.redeemedAt ? new Date(item.redeemedAt as string) : null,
+    created_at: new Date((item.createdAt as string) ?? (item.created_at as string) ?? ''),
+    updated_at: new Date((item.updatedAt as string) ?? (item.updated_at as string) ?? ''),
+  };
 }
 
 export class RedemptionError extends Error {
   outcome: string;
   existingGiftCard?: GiftCard;
-
   constructor(outcome: string, message: string, existingGiftCard?: GiftCard) {
     super(message);
     this.name = 'RedemptionError';

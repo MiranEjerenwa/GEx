@@ -19,6 +19,12 @@ export interface QueryResult<T> {
   lastEvaluatedKey?: Record<string, unknown>;
 }
 
+/** Appends the environment suffix (e.g. "-dev") to a base table name. */
+export function resolveTableName(baseName: string): string {
+  const suffix = process.env.DYNAMO_TABLE_SUFFIX ?? '';
+  return suffix ? `${baseName}-${suffix}` : baseName;
+}
+
 export abstract class BaseRepository<T> {
   protected readonly docClient: DynamoDBDocumentClient;
   protected readonly tableName: string;
@@ -26,7 +32,7 @@ export abstract class BaseRepository<T> {
 
   constructor(docClient: DynamoDBDocumentClient, tableName: string, logger: Logger) {
     this.docClient = docClient;
-    this.tableName = tableName;
+    this.tableName = resolveTableName(tableName);
     this.logger = logger;
   }
 

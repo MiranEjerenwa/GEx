@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.git
+.github
+*.md
+*.log
+placeholder
+push-placeholder.sh
+cdk.out
+packages/infra
+packages/frontend
+**/*.test.ts
+**/*.spec.ts
+**/.env
